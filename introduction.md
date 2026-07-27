@@ -14,15 +14,25 @@
 ```
 
 本地开发者 git push
+
 ↓
+
 GitHub 仓库
+
 ↓ (触发 Webhook)
+
 POST 请求 (JSON数据)
+
 ↓
+
 ngrok 隧道 (外网 → 内网穿透)
+
 ↓
+
 本地 Flask 服务器 (step2.py, 端口5000)
+
 ↓ (解析JSON，提取字段)
+
 终端打印 + 转发飞书机器人
 
 ````
