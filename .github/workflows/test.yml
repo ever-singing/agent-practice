@@ -1,41 +1,51 @@
-name: AI Code Review
+name: CI Test Pipeline
 
-# 触发条件：当有 Pull Request 提交或更新时触发
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
-  # 如果你也想在直接push到main分支时触发，可以加上下面这段
-  # push:
-  #   branches: [ main ]
 
 jobs:
-  code-review:
+  test:
     runs-on: ubuntu-latest
-
     steps:
-      # 第1步：拉取代码仓库内容
-      - name: Checkout code
+      - name: 拉取代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 拉取完整历史，确保diff能对比
+          fetch-depth: 0 # 拉取完整历史，确保能正确生成diff
 
-      # 第2步：安装 Python 环境
-      - name: Set up Python
+      - name: 安装 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
-      # 第3步：安装依赖库（比如requests，用来调用DeepSeek API）
-      - name: Install dependencies
-        run: pip install requests
-
-      # 第4步：生成代码改动的diff文件
-      - name: Generate diff
+      - name: 安装依赖(如果有 requirements.txt)
         run: |
-          git diff origin/${{ github.base_ref }} origin/${{ github.head_ref }} --output=diff.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests
 
-      # 第5步：运行审查脚本，调用DeepSeek API
-      - name: Run AI Code Review
+      - name: 跑一个简单检查(占位,以后换成真正的测试)
+        run: |
+          echo "开始检查代码..."
+          python -c "print('CI 检查通过 ✅')"
+
+      - name: 生成代码 diff
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff origin/${{ github.base_ref }} origin/${{ github.head_ref }} --output=diff.txt
+          else
+            git diff HEAD~1 HEAD --output=diff.txt || echo "首次提交，无历史可比对" > diff.txt
+          fi
+
+      - name: 运行 AI 代码审查
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python .github/workflows/code_review.py
+
+      - name: 通知飞书(无论成功失败都发送)
+        if: always()
+        run: |
+          curl -X POST "${{ secrets.FEISHU_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d "{\"msg_type\": \"text\", \"content\": {\"text\": \"CI Pipeline 状态: ${{ job.status }}\n仓库: ${{ github.repository }}\n提交者: ${{ github.actor }}\"}}"
