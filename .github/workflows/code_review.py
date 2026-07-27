@@ -30,8 +30,16 @@ def read_diff(file_path: str) -> str:
         print(f"❌ 找不到 diff 文件: {file_path}")
         sys.exit(1)
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
+    # 尝试用二进制方式读取，自动判断编码，避免UnicodeDecodeError
+    with open(file_path, "rb") as f:
+        raw = f.read()
+
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        # UTF-16编码（带BOM）
+        content = raw.decode("utf-16")
+    else:
+        # utf-8-sig 能同时兼容"纯UTF-8"和"带BOM的UTF-8"
+        content = raw.decode("utf-8-sig")
 
     if not content.strip():
         print("⚠️ diff 内容为空，本次没有代码改动，跳过审查")
