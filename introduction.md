@@ -14,15 +14,25 @@
 ```
 
 本地开发者 git push
+
 ↓
+
 GitHub 仓库
+
 ↓ (触发 Webhook)
+
 POST 请求 (JSON数据)
+
 ↓
+
 ngrok 隧道 (外网 → 内网穿透)
+
 ↓
+
 本地 Flask 服务器 (step2.py, 端口5000)
+
 ↓ (解析JSON，提取字段)
+
 终端打印 + 转发飞书机器人
 
 ````
@@ -216,13 +226,4 @@ Flask 运行的终端窗口，会实时打印：
 | Recent Deliveries | GitHub Webhook 详情页里的历史投递记录，用于排查问题              |
 | X-GitHub-Event    | HTTP 请求头字段，标识本次 Webhook 请求的事件类型                 |
 
-```
-
----
-
-## 📥 使用建议
-
-你可以把上面的内容全部复制，保存为一个 `.md` 文件（比如命名为 `github-webhook-notes.md`），用任何文本编辑器或 Markdown 阅读器打开，格式都会自动排版好，层级清晰、方便日后复习查阅。
-
-需要我帮你调整某部分内容的详细程度，或者补充其他细节吗？
 ```
