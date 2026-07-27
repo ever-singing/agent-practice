@@ -1,4 +1,4 @@
-name: Test CI
+name: CI Test Pipeline
 
 on:
   push:
@@ -7,11 +7,29 @@ on:
     branches: [main]
 
 jobs:
-  hello-job:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: 拉取代码
         uses: actions/checkout@v4
 
-      - name: Say Hello
-        run: echo "Hello, GitHub Actions is working!"
+      - name: 安装 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 安装依赖(如果有 requirements.txt)
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: 跑一个简单检查(占位,以后换成真正的测试)
+        run: |
+          echo "开始检查代码..."
+          python -c "print('CI 检查通过 ✅')"
+
+      - name: 通知飞书(无论成功失败都发送)
+        if: always()
+        run: |
+          curl -X POST "${{ secrets.FEISHU_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d "{\"msg_type\": \"text\", \"content\": {\"text\": \"CI Pipeline 状态: ${{ job.status }}\n仓库: ${{ github.repository }}\n提交者: ${{ github.actor }}\"}}"
