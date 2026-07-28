@@ -43,9 +43,20 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python .github/workflows/code_review.py
 
+      - name: 记录提交信息
+        run: echo "COMMIT_MSG=$(git log -1 --pretty=%s)" >> $GITHUB_ENV
+
       - name: 通知飞书(无论成功失败都发送)
         if: always()
-        run: |
-          curl -X POST "${{ secrets.FEISHU_WEBHOOK_URL }}" \
-          -H "Content-Type: application/json" \
-          -d "{\"msg_type\": \"text\", \"content\": {\"text\": \"CI Pipeline 状态: ${{ job.status }}\n仓库: ${{ github.repository }}\n提交者: ${{ github.actor }}\"}}"
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+          COMMIT_MSG: ${{ env.COMMIT_MSG }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python .github/workflows/notify_feishu.py
