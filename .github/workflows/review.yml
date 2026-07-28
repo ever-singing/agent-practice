@@ -1,0 +1,12 @@
+# 组织下任意仓库/.github/workflows/review.yml
+name: AI Review
+on: [push, pull_request]
+
+jobs:
+  call-review:
+    uses: Galaxy-Factory/ai-review-toolkit/.github/workflows/reusable-review.yml@main
+    secrets:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+    with:
+      review_persona: 'catgirl'
