@@ -55,7 +55,7 @@ def build_prompt(diff_content: str) -> str:
     if len(diff_content) > MAX_DIFF_CHARS:
         diff_content = diff_content[:MAX_DIFF_CHARS] + "\n\n...(diff内容过长，已截断)"
 
-    prompt = """你是一名资深代码审查专家，请对以下 git diff 内容进行审查。
+    prompt = f"""你是一名资深代码审查专家，请对以下 git diff 内容进行审查。
 
 【审查内容要求】（这部分不变，原样保留）
 请重点关注：
