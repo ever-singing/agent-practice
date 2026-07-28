@@ -44,7 +44,7 @@ jobs:
         run: python .github/workflows/code_review.py
 
       - name: 记录提交信息
-        run: echo "COMMIT_MSG=$(git log -1 --pretty=%s)" >> $GITHUB_ENV
+        run: echo "COMMIT_MSG=$(git log -1 --pretty=%s || echo '无法获取提交信息')" >> $GITHUB_ENV
 
       - name: 通知飞书(无论成功失败都发送)
         if: always()
@@ -56,7 +56,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           SHA: ${{ github.sha }}
           COMMIT_MSG: ${{ env.COMMIT_MSG }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_TITLE: ${{ github.event.pull_request.title || '' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python .github/workflows/notify_feishu.py
