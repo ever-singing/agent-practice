@@ -2,8 +2,8 @@
 
 ## 项目完整知识文档
 
-> 记录日期：2026年7月27日
-> 目标：实现 GitHub 代码推送后，自动通知到本地程序并转发飞书；同时打通 GitHub Actions，让每一次提交都能自动接受 AI 代码审查，并将结果同步到飞书
+> 记录日期：2026年7月27日（最近更新：2026年7月28日）
+> 目标：实现 GitHub 代码推送后，自动通知到本地程序并转发飞书；同时打通 GitHub Actions，让每一次提交都能自动接受 AI 代码审查，审查结果以结构化卡片形式推送到飞书
 
 ---
 
@@ -27,8 +27,6 @@ ngrok 隧道 (外网 → 内网穿透)
 终端打印 + 转发飞书机器人
 ```
 
-**核心价值**：让外部系统（GitHub）的事件，能够触达运行在自己电脑上、原本无法被外网访问的程序。
-
 ### 链路二：GitHub Actions AI 代码审查（CI/CD）
 
 ```
@@ -38,18 +36,18 @@ GitHub Actions 自动触发（ubuntu-latest 云端环境）
       ↓
 拉取代码 + 安装依赖
       ↓
-生成 git diff（对比 base/head 分支或前后 commit）
+区分事件类型（push / pull_request），生成对应 git diff
       ↓
-调用 DeepSeek API 对 diff 内容进行代码审查
+code_review.py：读取 diff → 按人格模式拼接 Prompt → 调用 DeepSeek API
       ↓
 审查结果保存为 review_result.txt
       ↓
-审查结果 + CI 状态 一并推送到飞书
+notify_feishu.py：拼接飞书卡片（区分Push/PR样式，带按钮跳转日志）
+      ↓
+飞书收到结构化卡片通知
 ```
 
-**核心价值**：不再依赖人工肉眼审查每一次提交，而是让 AI 在代码合入前，自动识别安全漏洞、逻辑问题和代码规范风险，并第一时间同步到团队沟通渠道。
-
-两条链路的共同底层逻辑是一致的：**利用 Webhook / Actions 机制，把 GitHub 上发生的事件，自动转化为可执行的后续动作（本地处理 或 云端审查），并最终以飞书通知的形式闭环。**
+两条链路的共同底层逻辑：**利用 Webhook / Actions 机制，把 GitHub 事件转化为可执行的后续动作，并最终以飞书通知的形式闭环。**
 
 ---
 
@@ -57,9 +55,7 @@ GitHub Actions 自动触发（ubuntu-latest 云端环境）
 
 ### 1. Flask 本地服务器 (step2.py)
 
-**作用**：接收 HTTP POST 请求，解析数据，做相应处理。
-
-**最终版核心代码逻辑**：
+接收 HTTP POST 请求，解析 GitHub 事件类型和数据。
 
 ```python
 from flask import Flask, request
@@ -68,139 +64,138 @@ app = Flask(__name__)
 
 @app.route('/webhook', methods=['POST'])
 def receive_data():
-    # 关键：先判断事件类型，再决定怎么处理
     event_type = request.headers.get('X-GitHub-Event')
     data = request.json
 
     print(f"收到了一个【{event_type}】类型的事件")
 
     if event_type == 'ping':
-        # GitHub连接测试请求，结构简单，无repository等字段
         print("这是GitHub发来的测试请求，说明连接成功了！")
         return "pong收到，连接测试成功！"
 
     if event_type == 'push':
-        # 真实代码推送事件，才有完整字段
         repo_name = data['repository']['name']
         pusher_name = data['pusher']['name']
         commit_msg = data['head_commit']['message']
         print(f"【{pusher_name}】在项目【{repo_name}】提交了：{commit_msg}")
         return "推送事件处理完成！"
 
-    # 兜底：其他类型事件先记录，不报错
     print("暂时还没处理这种类型的事件")
     return "收到，但暂未处理"
 
 app.run(port=5000)
 ```
 
-**关键点**：
-
-- `@app.route('/webhook', methods=['POST'])`：定义一个只接受 POST 请求的接口地址
-- `request.json`：自动把请求体的 JSON 字符串，解析成 Python 字典
-- `request.headers.get('X-GitHub-Event')`：读取请求头，判断这次事件的类型
+**关键点**：先判断 `X-GitHub-Event` 事件类型，再决定怎么解析 `request.json`，避免对不同结构的 payload 硬取值导致 KeyError。
 
 ---
 
 ### 2. ngrok（内网穿透工具）
 
-**作用**：把本地 `127.0.0.1:5000`（只有自己电脑能访问），映射成一个外网能访问的公开网址。
-
-**启动命令**：
-
 ```bash
 ngrok http 5000
 ```
 
-**运行后会显示**：
-
-```
-Forwarding: https://xxxx-xxxx.ngrok-free.dev -> http://localhost:5000
-```
-
-这个 `https://xxxx.ngrok-free.dev` 就是外网可访问的临时地址。
+运行后会显示一个 `https://xxxx.ngrok-free.dev` 的外网地址，映射到本地 5000 端口。
 
 ---
 
 ### 3. GitHub Webhook 配置
 
-**位置**：仓库页面 → `Settings` → `Webhooks` → `Add webhook`
-
 | 字段         | 填写内容                                       |
 | ------------ | ---------------------------------------------- |
 | Payload URL  | `https://你的ngrok地址.ngrok-free.dev/webhook` |
 | Content type | `application/json`                             |
-| Secret       | 可选，用于安全验证（进阶功能）                 |
 | 触发事件     | 先选 `Just the push event`                     |
 | Active       | 保持勾选                                       |
 
-**极其重要的一点**：⚠️ **Webhook 是绑定在"具体某一个仓库"上的**，不是全局生效。在哪个仓库配置的 Webhook，只有那个仓库发生 push 才会触发通知，在别的仓库操作不会有任何反应。
+⚠️ Webhook 是绑定在"具体某一个仓库"上的，不是全局生效。
 
 ---
 
 ### 4. GitHub Actions 工作流 (.github/workflows/test.yml)
 
-**作用**：在 GitHub 云端环境中自动执行 CI 测试 + AI 代码审查 + 飞书通知，无需依赖本地机器保持在线。
-
-**核心配置要点**：
+完整流程包含：拉取代码 → 装环境 → 装依赖 → 简单CI检查 → 生成diff（区分push/PR）→ AI审查 → 飞书通知。
 
 ```yaml
-- name: Checkout code
+- name: 拉取代码
   uses: actions/checkout@v4
   with:
-    fetch-depth: 0 # 关键：拉取完整历史，否则 git diff 对比不出结果
+    fetch-depth: 0 # 拉取完整历史，否则 git diff 对比不出结果
 
-- name: Generate diff
+- name: 生成代码 diff
   run: |
-    git diff origin/${{ github.base_ref }} origin/${{ github.head_ref }} --output=diff.txt || echo "diff generation failed" > diff.txt
+    if [ "${{ github.event_name }}" = "pull_request" ]; then
+      git diff origin/${{ github.base_ref }} origin/${{ github.head_ref }} --output=diff.txt
+    else
+      git diff HEAD~1 HEAD --output=diff.txt || echo "首次提交，无历史可比对" > diff.txt
+    fi
+
+- name: 记录提交信息
+  run: echo "COMMIT_MSG=$(git log -1 --pretty=%s || echo '无法获取提交信息')" >> $GITHUB_ENV
 
 - name: 运行 AI 代码审查
   env:
     DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-  run: python code_review.py
+    REVIEW_PERSONA: "normal" # 可选: normal / catgirl
+    VERBOSE: "true"
+  run: python .github/workflows/code_review.py
 
-- name: 发送飞书通知
-  if: always() # 关键：无论审查/测试成功与否，都要通知
+- name: 通知飞书(无论成功失败都发送)
+  if: always()
   env:
     FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-  run: python notify_feishu.py
+    JOB_STATUS: ${{ job.status }}
+    EVENT_NAME: ${{ github.event_name }}
+    REPO: ${{ github.repository }}
+    ACTOR: ${{ github.actor }}
+    SHA: ${{ github.sha }}
+    COMMIT_MSG: ${{ env.COMMIT_MSG }}
+    PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+    PR_TITLE: ${{ github.event.pull_request.title || '' }}
+    RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  run: python .github/workflows/notify_feishu.py
 ```
 
 **关键点**：
 
-- `secrets.DEEPSEEK_API_KEY` / `secrets.FEISHU_WEBHOOK_URL`：敏感信息存放在 GitHub Repository Secrets 中，不会出现在代码或日志里，安全性和本地 `.env` 文件是同一思路，只是换到了云端
-- `fetch-depth: 0`：Actions 默认只拉取最近一次提交（浅克隆），如果不加这个参数，`git diff` 大概率会因为找不到对比分支而失败
-- `pull_request` 事件下对比的是两个分支（`base_ref` vs `head_ref`）；`push` 事件下需要对比前后两次 commit，逻辑略有不同，需要在 workflow 里做区分处理
-- `if: always()`：保证飞书通知这一步，即使前面的审查或测试步骤失败/报错，也一定会执行，不会出现"CI 挂了却没人知道"的情况
+- `fetch-depth: 0`：不加的话 Actions 默认浅克隆，`git diff` 会因为找不到对比历史而失败
+- `github.event_name` 判断：push 和 pull_request 的 diff 生成方式不同，一个对比两个分支，一个对比前后两次commit
+- `PR_NUMBER`/`PR_TITLE` 用 `|| ''` 兜底：push事件下 `github.event.pull_request` 是 null，直接访问其属性会报错
+- `if: always()`：保证无论审查/测试是否失败，飞书通知这一步都会执行
 
 ---
 
-### 5. code_review.py（AI 代码审查脚本）
+### 5. code_review.py（AI 代码审查脚本 · 双人格模式）
 
-**作用**：读取 `git diff` 生成的差异文件，调用 DeepSeek API，让 AI 对本次改动进行代码审查，并将结果落盘保存。
+**核心设计**：
 
-**核心处理逻辑**：
+- **公共格式常量**：`OUTPUT_FORMAT_RULES` 单独抽出，避免 normal/catgirl 两套 Prompt 重复维护、改一处忘另一处
+- **双人格切换**：通过环境变量 `REVIEW_PERSONA` 控制，`normal` 为专业审查语气，`catgirl` 为猫娘语气（专业审查标准不因人格设定降低，只改变表达方式）
+- **VERBOSE 开关**：控制日志详细程度，避免非交互式 CI 环境产生过多冗余输出
+- **防御性 diff 读取**：找不到文件或内容为空时返回 `None` 而非中文提示字符串，避免这段提示被误当作代码内容拼进 Prompt 误导 AI；`main` 函数判断 `None` 后直接跳过 API 调用，节省一次请求
+- **temperature=0.3**：审查任务需要稳定、严谨的输出，不需要"创造力"，特意调低（曾经手滑改成0.7，被AI审查自己发现了这个问题）
 
 ```python
-def read_diff_file(path='diff.txt'):
-    # 防御性读取：先以二进制方式读取，再根据 BOM 头自动判断编码
-    with open(path, 'rb') as f:
-        raw = f.read()
-
-    if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
-        text = raw.decode('utf-16')
-    elif raw.startswith(b'\xef\xbb\xbf'):
-        text = raw.decode('utf-8-sig')
-    else:
-        text = raw.decode('utf-8', errors='replace')
-
-    return text
+def build_prompt(diff_content):
+    persona = os.environ.get('REVIEW_PERSONA', 'normal').strip().lower()
+    if persona not in PERSONA_MAP:
+        persona = 'normal'
+    template = PERSONA_MAP[persona]
+    return template.format(format_rules=OUTPUT_FORMAT_RULES, diff_content=diff_content)
 ```
 
-**关键点**：
+---
 
-- 审查结果会保存到 `review_result.txt`，供后续步骤读取并转发到飞书
-- Prompt 设计上重点关注：**安全漏洞（硬编码密码、危险函数调用）、代码规范（命名冲突）、CI/CD 配置本身的风险**，实测下来 DeepSeek 对这几类问题的识别率相当高
+### 6. notify_feishu.py（飞书通知脚本 · 卡片消息版）
+
+**从纯文本升级为交互式卡片**，核心改进：
+
+- `msg_type` 从 `text` 改为 `interactive`，让 `**加粗**` 等markdown语法能被飞书正确渲染，不再是裸露的符号堆砌
+- 根据 `EVENT_NAME` 判断 push/PR，卡片**标题文案和颜色都不同**（绿色=Push，蓝色=Pull Request），群里一眼区分
+- 卡片底部加了"查看完整日志"按钮，直接跳转到 Actions 运行页
+- 审查结果做**总长度截断保护**（预留基础信息长度后再计算审查内容可用长度），避免超出飞书约4096字符的上限导致发送失败
+- `safe_env()` 统一处理环境变量缺失/为字符串"None"的情况，避免消息里出现难看的"None"字样
 
 ---
 
@@ -208,103 +203,70 @@ def read_diff_file(path='diff.txt'):
 
 ### 坑1：ngrok 免费版网址每次重启都会变
 
-**现象**：关掉重启 ngrok 后，生成的网址完全不同。
-
-**影响**：之前在 GitHub 配置的 Webhook 网址会失效，需要手动去改。
-
-**解决方案**：
-
-- 学习阶段：每次重启后，去 GitHub 仓库 Webhook 设置里，手动更新一下 Payload URL
-- 长期使用：申请 ngrok 付费版的固定域名（Static Domain）
-
----
+每次重启后需去 GitHub Webhook 设置里手动更新 Payload URL；长期使用建议申请 ngrok 固定域名。
 
 ### 坑2：GitHub 的 ping 事件 导致 500 报错
 
-**现象**：Webhook 刚配置好，GitHub 自动发送一次 `ping` 测试请求，但 Flask 报 500 Internal Server Error。
-
-**原因**：
-
-- `ping` 事件的 JSON 数据结构里，**没有** `repository`、`pusher`、`head_commit` 这些字段
-- 代码却直接尝试读取 `data['repository']['name']`，导致 `KeyError`
-
-**解决方案**：
-
-- 先通过请求头 `X-GitHub-Event` 判断"这是什么类型的事件"
-- 针对不同事件类型分别处理，`ping` 事件简单返回即可，不要尝试读取不存在的字段
-
-**这是一个通用的编程思维**：处理外部系统传来的数据时，不能假设数据结构永远一致，要先做类型判断，再决定怎么取值。
-
----
+`ping` 事件没有 `repository`/`pusher` 等字段，需先判断 `X-GitHub-Event` 再决定取值方式。**通用编程思维**：不能假设外部数据结构永远一致。
 
 ### 坑3：在错误的仓库里 push，代码毫无反应
 
-**现象**：配置好 Webhook 后，在另一个仓库 push 代码，本地终端毫无动静。
+Webhook 是仓库级别订阅，用 `git remote -v` 核对当前文件夹绑定的远程仓库是否匹配。
 
-**原因**：Webhook 是仓库级别的订阅，配置在 A 仓库，B 仓库的操作不会触发它。
+### 坑4：Windows 本地生成的 diff 文件，Python 读取报 UnicodeDecodeError
 
-**解决方案**：
+PowerShell 的 `>` 重定向会把 UTF-8 转码成 UTF-16/GBK。解决：改用 `git diff --output=diff.txt` 绕开重定向，Python端二进制读取+BOM头检测自动判断编码。
 
-- 确认本地终端所在文件夹对应的仓库，和 GitHub 网页上配置 Webhook 的仓库，是否一致
-- 用命令 `git remote -v` 查看当前文件夹绑定的远程仓库地址，核对仓库名是否匹配
+### 坑5：git diff 在 Actions 里因浅克隆而失败
 
----
+`actions/checkout` 默认浅克隆，需加 `fetch-depth: 0` 拉取完整历史。
 
-### 坑4：Windows 本地生成的 diff 文件，Python 读取时报 UnicodeDecodeError
+### 坑6：飞书消息看起来"每次都一样"
 
-**现象**：在 Windows 上用 PowerShell 执行 `git diff > diff.txt` 生成差异文件，再用 Python 的 `open()` 读取时，直接抛出 `UnicodeDecodeError`。
+**现象**：飞书收到的CI通知除了状态外没有任何区分度信息，多次push看起来像重复消息。
 
-**原因**：
+**原因**：原始通知直接用 `curl` 拼接，只带了 `job.status`、`repository`、`actor` 三个字段，没有commit哈希、提交信息这些能区分"这是哪一次改动"的关键信息。
 
-- Git 本身输出的是 UTF-8 编码内容
-- 但 PowerShell 的 `>` 重定向符，会把输出重新转码成 UTF-16 或 GBK，导致 Python 默认按 UTF-8 解码时直接失败
+**解决**：把 `curl` 换成 Python 脚本（`notify_feishu.py`），补充 commit 短哈希、提交信息/PR标题等字段，且 push 和 PR 展示不同内容。
 
-**解决方案**：
+### 坑7：AI 审查结果没有真正发到飞书
 
-- **规范化生成方式**：改用 `git diff --output=diff.txt` 参数直接生成文件，绕开 PowerShell 重定向的转码干扰
-- **防御性读取**：Python 端改为二进制模式读取文件，先检测文件开头的 BOM 头，据此判断是 UTF-8 还是 UTF-16，再进行相应解码，代码见上文 `code_review.py` 部分
-- **换到 Linux 环境后问题自动消失**：GitHub Actions 使用 `ubuntu-latest` 运行环境，本身对 UTF-8 支持良好，不存在 Windows 特有的编码转换问题，这也是把审查流程迁移到云端 CI 的一个附带好处
+**现象**：飞书只收到了CI通过/失败的状态，`review_result.txt` 里辛辛苦苦生成的审查内容完全没被用上。
 
----
+**原因**：原来的 `curl` 命令消息体是写死的固定文案，压根没读取过 `review_result.txt` 文件。
 
-### 坑5：git diff 在 Actions 里因为浅克隆而失败
+**解决**：`notify_feishu.py` 里新增 `read_review_result()`，读取文件内容并拼进消息体，同时做长度截断保护。
 
-**现象**：本地手动跑 `git diff` 一切正常，但放到 GitHub Actions 里，同样的命令却提示找不到对比的分支或 commit。
+### 坑8：飞书纯文本消息无法渲染 Markdown，DeepSeek 输出的 `##`、`**` 变成裸符号
 
-**原因**：`actions/checkout` 默认只拉取最近一次提交（浅克隆），历史记录不完整，导致 `git diff` 找不到用来对比的另一端。
+**现象**：DeepSeek 审查结果里用了 `##` 标题、`**加粗**`，飞书 `text` 类型消息不支持渲染，导致这些符号原样显示，观感很差。
 
-**解决方案**：
+**解决**：双管齐下——① Prompt 里明确要求"不要使用Markdown标题/列表语法"；② `notify_feishu.py` 把 `msg_type` 从 `text` 升级为 `interactive` 卡片消息，卡片内的 `markdown` 组件能正确渲染剩余的加粗语法。
 
-- 在 `actions/checkout` 步骤里加上 `fetch-depth: 0`，拉取完整的提交历史
-- 同时针对"仓库刚创建、只有一次提交"这种边界情况做兜底处理（比如用 `||` 接一个默认的错误提示文本，而不是让整个 workflow 直接失败）
+### 坑9：Prompt 里两套人格模板"输出格式要求"重复维护
+
+**现象**：`PROMPT_NORMAL` 和 `PROMPT_CATGIRL` 里格式规则几乎完全一样，写了两份，容易改一处忘另一处。
+
+**解决**：提取成 `OUTPUT_FORMAT_RULES` 公共常量，两个模板通过 `.format()` 引用同一份规则。
+
+### 坑10：diff 为空时返回中文提示字符串，可能误导 AI
+
+**现象**：`read_diff_file` 找不到文件时返回类似"（未找到 diff 文件...）"的中文字符串，`main` 函数没做判断就直接拿去拼 Prompt，AI 可能把这段提示误当成代码内容来审查。
+
+**解决**：改为返回 `None`，`main` 函数判断 `None` 后直接跳过 API 调用，写入固定的"无差异"提示，顺便节省一次 API 调用。
+
+### 坑11：调试时把 temperature 手滑改高，输出变得不稳定
+
+审查任务追求的是稳定、严谨，`temperature` 曾一度被改到 `0.7`（更适合创意写作场景），导致输出风格波动较大。改回 `0.3` 后审查结论明显更一致。
 
 ---
 
 ## 四、调试排查技巧
 
-### 1. GitHub 端排查："Recent Deliveries"（Webhook 场景）
-
-在 Webhook 详情页面，能看到每一次投递记录：
-
-- ✅ 绿色：请求成功送达并被处理
-- ❌ 红色：请求失败，点开可看具体报错原因
-
-支持点击 **Redeliver**（重新发送），无需重新 push 代码即可重复测试。
-
-### 2. 本地端排查：终端日志
-
-Flask 运行的终端窗口，会实时打印：
-
-- 每一次收到的请求（状态码 200 表示成功接收，500 表示处理报错）
-- 你在代码里用 `print()` 打印的自定义调试信息
-
-### 3. GitHub Actions 端排查："Actions" 标签页日志（CI/CD 场景）
-
-仓库页面 → `Actions` 标签 → 点开对应的一次运行记录，可以逐步查看每一个 step 的详细日志：
-
-- 每个 step 前面有 ✅ / ❌ 标识，一眼看出哪一步失败
-- 点开具体某一步，能看到完整的命令输出（比如 diff 内容、DeepSeek 返回的原始审查结果）
-- 支持在 workflow 文件修改后重新触发一次运行，反复调试 Prompt 或脚本逻辑
+1. **GitHub 端**：Webhook详情页 "Recent Deliveries" 查看每次投递记录，支持 Redeliver 重新发送
+2. **本地端**：Flask 终端实时打印请求日志和自定义 `print()` 信息
+3. **Actions 端**：仓库 "Actions" 标签页逐 step 查看日志，能看到 diff 内容、DeepSeek 原始返回
+4. **飞书调试**：`notify_feishu.py` 打印 `resp.status_code` 和 `resp.text`，飞书接口报错信息通常直接说明原因
 
 ---
 
@@ -312,62 +274,82 @@ Flask 运行的终端窗口，会实时打印：
 
 **本地 Webhook 通知链路**
 
-- [x] 本地 Flask 服务器接收 HTTP POST 请求
-- [x] ngrok 实现内网穿透，外网可访问本地服务
-- [x] GitHub Webhook 正确配置，绑定到指定仓库
-- [x] 正确处理 `ping` 事件（连接测试），不再报错
-- [x] 正确解析 `push` 事件，提取仓库名、推送人、提交信息
-- [x] 将解析结果转发到飞书机器人，实现即时通知
+- [x] Flask 服务器接收 HTTP POST 请求
+- [x] ngrok 内网穿透
+- [x] GitHub Webhook 正确配置
+- [x] 正确处理 ping / push 事件
+- [x] 转发飞书机器人
 
 **CI/CD AI 代码审查链路**
 
-- [x] GitHub Actions 自动触发（支持 `push` 和 `pull_request` 两种场景）
-- [x] 自动生成 `git diff`，并妥善处理编码问题（BOM 检测 + 自动解码）
-- [x] 敏感信息（DeepSeek API Key、飞书 Webhook 地址）通过 GitHub Secrets 安全存储
-- [x] 调用 DeepSeek API 对代码改动进行安全性、规范性、逻辑问题审查
-- [x] 审查结果落盘保存为 `review_result.txt`
-- [x] 无论 CI 是否通过，均通过 `if: always()` 保证飞书能收到状态通知
-- [x] 在新分支上完成集成测试，验证了完整链路的可用性
+- [x] Actions 自动触发（支持 push 和 pull_request）
+- [x] 区分 push/PR 生成不同的 git diff
+- [x] 编码问题彻底修复（BOM检测+自动解码）
+- [x] 敏感信息通过 GitHub Secrets 存储
+- [x] DeepSeek AI 审查，双人格模式（normal / catgirl）可切换
+- [x] Prompt 公共格式规则提取，避免重复维护
+- [x] diff 为空时的空值处理，不再误导 AI 也不浪费 API 调用
+- [x] temperature 调优至 0.3，保证审查稳定性
+- [x] 飞书通知从纯文本升级为交互式卡片消息
+- [x] 卡片区分 Push/PR（不同标题+颜色），带跳转日志按钮
+- [x] 消息长度截断保护，环境变量空值兜底（不再出现"None"字样）
+- [x] `if: always()` 保证CI状态无论成败都通知
 
 ---
 
 ## 六、后续可优化方向
 
-**本地 Webhook 通知链路**
-
-1. **消息美化**：将纯文本通知改成飞书卡片消息，支持链接、颜色、按钮等更丰富的展示
-2. **安全性增强**：给 Webhook 配置 Secret 密钥，Flask 端做签名校验，防止伪造请求
-3. **支持更多事件类型**：目前只处理了 push，可扩展处理 issues（提问）、pull_request（合并请求）等
-4. **稳定性提升**：目前依赖本机 + ngrok 常开，后续可考虑部署到云服务器，实现 7x24 小时稳定运行
-5. **固定域名**：申请 ngrok 付费静态域名，或使用其他内网穿透方案，避免每次重启都要重新配置 Webhook 地址
-
-**CI/CD AI 代码审查链路**
-
-6. **Prompt 精细化调优**：目前审查结果虽然已经能精准识别硬编码密码、`eval()` 注入等严重问题，下一步可以让输出更结构化（比如按"安全性 / 性能 / 代码规范"分类），便于后续做解析和统计
-7. **审查结果回评到 PR**：目前审查结果只存在 `review_result.txt` 里，需要去 Actions 日志查看，后续可以调用 GitHub API，把审查意见自动评论到 PR 页面下方，方便开发者第一时间在合入前看到
-8. **飞书通知内容升级**：目前飞书只推送 CI 整体状态，可以考虑把 `review_result.txt` 的核心内容也拼接进飞书消息，减少一次"跳转去 GitHub 看日志"的操作
-9. **CI 配置可选化**：AI 审查步骤和飞书通知步骤，建议增加开关配置（比如通过 workflow 变量控制是否启用），方便团队按需灵活开启或关闭，而不是写死在流程里
-10. **两条链路的整合**：目前 Webhook 通知（本地实时）和 Actions 审查（云端 CI）是两套相对独立的系统，未来可以考虑统一到同一个飞书群/同一套通知模板下，形成"push 即通知、PR 即审查"的完整开发者体验
+1. **审查结果回评到 PR**：调用 GitHub API 把审查意见自动评论到 PR 页面，减少"跳去看Actions日志"的操作
+2. **VERBOSE 开关落地验证**：目前已加入代码，需要实际在CI里测试 `VERBOSE=false` 时日志是否符合预期
+3. **人格模式扩展**：`PERSONA_MAP` 字典化后新增人格成本很低，可以考虑"严厉学长"、"毒舌吐槽"等更多模式
+4. **审查跳过机制**：commit信息或PR标题包含 `[skip-review]` 时跳过AI审查，应对纯文档改动等不需要审查的场景
+5. **diff 大小上限控制**：超大 diff 可能导致 API 调用成本过高或超出上下文限制，需要加保护（比如超过阈值时只审查关键文件，或提示"改动过大建议拆分PR"）
+6. **两条链路整合**：Webhook实时通知（本地）和 Actions审查（云端）目前相对独立，未来可考虑统一到同一套飞书消息模板下
+7. **发布前的清理工作**（详见下方"七、发布准备清单"）
 
 ---
 
-## 七、关键术语速查表
+## 七、发布准备清单（若考虑开源/团队共享）
 
-| 术语              | 含义                                                                |
-| ----------------- | ------------------------------------------------------------------- |
-| Webhook           | 一种"事件通知"机制，某个动作发生时，自动向指定网址发送 HTTP 请求    |
-| ngrok             | 内网穿透工具，把本地服务映射到外网可访问的地址                      |
-| Flask             | Python 的轻量级 Web 框架，用于快速搭建接收请求的服务器              |
-| Payload           | Webhook 请求携带的具体数据内容（通常是 JSON 格式）                  |
-| ping 事件         | GitHub 配置 Webhook 后自动发送的连接测试请求                        |
-| push 事件         | 代码真实推送到仓库时触发的事件                                      |
-| Recent Deliveries | GitHub Webhook 详情页里的历史投递记录，用于排查问题                 |
-| X-GitHub-Event    | HTTP 请求头字段，标识本次 Webhook 请求的事件类型                    |
-| GitHub Actions    | GitHub 内置的 CI/CD 自动化平台，可基于事件（push/PR等）触发工作流   |
-| Workflow          | Actions 的配置文件（YAML 格式），定义了一系列自动执行的 job 和 step |
-| Secrets           | GitHub 仓库级别的加密变量存储区，用于安全保存 API Key 等敏感信息    |
-| fetch-depth       | checkout 步骤的参数，控制拉取多少层提交历史，0 表示拉取全部历史     |
-| git diff          | Git 命令，用于对比两个分支或提交之间的代码差异                      |
-| BOM 头            | 文件开头的字节标记，用于标识文本编码方式（如 UTF-8 / UTF-16）       |
-| DeepSeek API      | 本项目调用的大模型 API，用于对代码 diff 内容执行自动化审查          |
-| if: always()      | Actions 语法，表示该 step 无论前序步骤成功或失败都必须执行          |
+### 🔴 必须处理
+
+- [ ] **密钥安全扫描**：检查 git 历史（`git log -p | grep -i "sk-"`）是否曾提交过真实API Key/Webhook地址；一旦发现，仅删除文件不够，必须去 DeepSeek/飞书后台**吊销旧密钥并重新生成**
+- [ ] **清理测试代码**：移除调试用的 `bad_function`、`eval()` 等故意埋的坏代码
+- [ ] **数据隐私说明**：明确告知使用者"本工具会将代码 diff 发送至 DeepSeek 第三方 API"，涉及公司/他人私有仓库时需额外评估合规性
+
+### 🟡 建议处理
+
+- [ ] 编写面向使用者的 `README.md`（区别于本文档这种"个人学习笔记"风格）
+- [ ] 添加 `LICENSE` 文件（如 MIT）
+- [ ] 补充 `.gitignore`（排除 `diff.txt`、`review_result.txt` 等运行时生成文件）
+- [ ] 补充 `requirements.txt` 明确依赖版本
+- [ ] 增加 diff 大小上限，控制 API 调用成本
+
+### 🟢 锦上添花
+
+- [ ] 给编码判断等核心逻辑补充单元测试
+- [ ] 打 tag 做版本管理，维护 CHANGELOG
+- [ ] 增加 `[skip-review]` 等逃生舱机制
+
+---
+
+## 八、关键术语速查表
+
+| 术语              | 含义                                                                  |
+| ----------------- | --------------------------------------------------------------------- |
+| Webhook           | 事件发生时自动向指定网址发送 HTTP 请求的机制                          |
+| ngrok             | 内网穿透工具，映射本地服务到公网地址                                  |
+| Flask             | Python 轻量级 Web 框架                                                |
+| Payload           | Webhook 请求携带的 JSON 数据内容                                      |
+| ping / push 事件  | GitHub Webhook 的连接测试事件 / 代码推送事件                          |
+| Recent Deliveries | Webhook 详情页的历史投递记录                                          |
+| X-GitHub-Event    | 标识 Webhook 事件类型的请求头字段                                     |
+| GitHub Actions    | GitHub 内置 CI/CD 自动化平台                                          |
+| Secrets           | GitHub 仓库级加密变量存储，用于保存 API Key 等敏感信息                |
+| fetch-depth       | checkout 步骤参数，控制拉取的提交历史深度，0 为全部历史               |
+| BOM 头            | 文件开头标识编码方式的字节标记                                        |
+| DeepSeek API      | 本项目调用的大模型 API，用于代码 diff 自动化审查                      |
+| if: always()      | Actions 语法，无论前序步骤成功/失败都执行该 step                      |
+| interactive 卡片  | 飞书消息类型，支持 Markdown 渲染、按钮等富交互元素，区别于纯文本 text |
+| REVIEW_PERSONA    | 本项目自定义环境变量，控制 AI 审查语气（normal / catgirl）            |
+| temperature       | LLM API 参数，控制输出随机性，审查类任务建议调低（如0.3）以保证稳定   |
