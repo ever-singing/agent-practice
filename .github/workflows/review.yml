@@ -1,6 +1,27 @@
-# 组织下任意仓库/.github/workflows/review.yml
+# ============================================================
+# AI Review 标准接入模板
+# 使用方法：复制此文件到你的仓库 .github/workflows/review.yml
+# 然后在仓库 Settings → Secrets 中配置 DEEPSEEK_API_KEY 和 FEISHU_WEBHOOK_URL
+# （如果组织已配置 Organization Secrets，可跳过这一步）
+# ============================================================
+
 name: AI Review
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# 防止同一分支的 push 与 pull_request(synchronize) 同时触发导致重复审查
+# 原理：push 新 commit 到已开 PR 的分支时，会同时触发 push 事件和
+# pull_request.synchronize 事件，二者的 github.ref 相同，会被分到同一组，
+# 后到达的自动取消先到达的，最终只保留一次真正跑完的审查。
+#
+# 注：pull_request.types 未包含 closed，因此点击 "Merge pull request"
+# 合并时只会触发一次 main 分支的 push 事件，不会产生重复。
+concurrency:
+  group: review-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   call-review:
@@ -9,4 +30,19 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
     with:
-      review_persona: 'catgirl'
+      review_persona: normal   # 可选：normal（默认）| catgirl
+
+# ------------------------------------------------------------
+# 可选优化项（谨慎使用）：
+# 如果你的 main 分支已设置强制 PR 保护
+# （Settings → Branches → Require a pull request before merging），
+# 团队严格走 PR 流程从不直接 push 到 main，
+# 才可以加上下面这行来跳过 main 上的重复审查，节省一次 API 调用：
+#
+#   push:
+#     branches-ignore:
+#       - main
+#
+# 如果没有设置分支保护，或习惯直接 push 到 main，请勿添加，
+# 否则 main 分支上的改动将永远不会被审查到。
+# ------------------------------------------------------------
