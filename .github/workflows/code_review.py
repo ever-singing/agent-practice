@@ -1,16 +1,25 @@
 """
-AI 代码审查脚本（双人格模式版）
-功能：
-1. 读取 git diff 文件（自动处理编码问题）
-2. 根据环境变量 REVIEW_PERSONA 选择审查语气：normal（专业） / catgirl（猫娘）
-3. 调用 DeepSeek API 进行代码审查
-4. 将结果保存到 review_result.txt，供 notify_feishu.py 读取
+AI 代码审查脚本（双人格模式版 v2）
+本轮修复：
+1. 提取公共的"输出格式要求"常量，避免两套 Prompt 重复维护
+2. VERBOSE 开关控制日志输出，避免 CI 环境产生多余打印
+3. diff 为空/文件不存在时返回 None，main 里做空值判断，不再拼接中文提示误导 AI
+4. temperature 改回 0.3，保证审查结果的稳定性和严谨性
 """
 
 import os
 import requests
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+VERBOSE = os.environ.get("VERBOSE", "true").strip().lower() != "false"
+
+# ========== 公共的输出格式要求（两套人格共用，改一处即可） ==========
+
+OUTPUT_FORMAT_RULES = """【输出格式要求】
+- 不要使用 Markdown 标题语法（不要用 # 或 ##）
+- 不要使用 Markdown 列表符号（不要用 1. 2. 或 -），改用中文顿号或换行分隔
+- 每一类问题控制在2-3条以内，简明扼要，不要长篇大论
+"""
 
 # ========== 两套 Prompt 模板 ==========
 
@@ -22,10 +31,7 @@ PROMPT_NORMAL = """你是一名资深代码审查专家，请对以下 git diff 
 2. 代码规范问题（命名、格式、潜在冲突等）
 3. 逻辑错误或边界情况处理不当
 
-【输出格式要求】
-- 不要使用 Markdown 标题语法（不要用 # 或 ##）
-- 不要使用 Markdown 列表符号（不要用 1. 2. 或 -），改用中文顿号或换行分隔
-- 每一类问题控制在2-3条以内，简明扼要，不要长篇大论
+{format_rules}
 - 如果某一类没有问题，直接写"未发现明显问题"
 
 请按如下结构输出：
@@ -60,10 +66,7 @@ PROMPT_CATGIRL = """你现在扮演一只猫娘代码审查员，说话时要带
 2. 代码规范问题（命名、格式、潜在冲突等）
 3. 逻辑错误或边界情况处理不当
 
-【输出格式要求】
-- 不要使用 Markdown 标题语法（不要用 # 或 ##）
-- 不要使用 Markdown 列表符号（不要用 1. 2. 或 -），改用中文顿号或换行分隔
-- 每一类问题控制在2-3条以内，简明扼要
+{format_rules}
 - 如果某一类没有问题，用猫娘语气夸一下主人
 
 请按如下结构输出：
@@ -93,10 +96,21 @@ PERSONA_MAP = {
 }
 
 
+def log(msg):
+    """受 VERBOSE 开关控制的打印函数"""
+    if VERBOSE:
+        print(msg)
+
+
 def read_diff_file(path="diff.txt"):
-    """防御性读取 diff 文件，自动识别编码，避免 UnicodeDecodeError"""
+    """
+    防御性读取 diff 文件，自动识别编码。
+    找不到文件或内容为空时返回 None（而不是中文提示字符串），
+    避免这段中文被误当成代码内容拼进 prompt，误导 AI 判断。
+    """
     if not os.path.exists(path):
-        return "（未找到 diff 文件，可能是首次提交或 diff 生成步骤失败）"
+        log(f"⚠️ 未找到 diff 文件: {path}")
+        return None
 
     with open(path, "rb") as f:
         raw = f.read()
@@ -109,7 +123,8 @@ def read_diff_file(path="diff.txt"):
         text = raw.decode("utf-8", errors="replace")
 
     if not text.strip():
-        return "（本次没有检测到代码差异）"
+        log("⚠️ diff 文件内容为空")
+        return None
 
     return text
 
@@ -119,12 +134,12 @@ def build_prompt(diff_content):
     persona = os.environ.get("REVIEW_PERSONA", "normal").strip().lower()
 
     if persona not in PERSONA_MAP:
-        print(f"⚠️ REVIEW_PERSONA='{persona}' 不是有效值，已自动兜底为 normal")
+        log(f"⚠️ REVIEW_PERSONA='{persona}' 不是有效值，已自动兜底为 normal")
         persona = "normal"
 
-    print(f"🎭 本次审查使用人格模式: {persona}")
+    log(f"🎭 本次审查使用人格模式: {persona}")
     template = PERSONA_MAP[persona]
-    return template.format(diff_content=diff_content)
+    return template.format(format_rules=OUTPUT_FORMAT_RULES, diff_content=diff_content)
 
 
 def call_deepseek(prompt):
@@ -136,7 +151,7 @@ def call_deepseek(prompt):
     payload = {
         "model": "deepseek-chat",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
+        "temperature": 0.3,  # 审查任务需要稳定、严谨，不需要"创造力"
     }
 
     try:
@@ -152,15 +167,23 @@ def call_deepseek(prompt):
 
 def main():
     diff_content = read_diff_file()
-    prompt = build_prompt(diff_content)
-    review_result = call_deepseek(prompt)
+
+    if diff_content is None:
+        # 关键修复：diff 为空时，不再拼接中文提示去调用 AI，直接给出结果，节省一次 API 调用
+        review_result = (
+            "ℹ️ 本次未检测到代码差异，跳过 AI 审查（可能是首次提交或无实际改动）"
+        )
+        log(review_result)
+    else:
+        prompt = build_prompt(diff_content)
+        review_result = call_deepseek(prompt)
 
     with open("review_result.txt", "w", encoding="utf-8") as f:
         f.write(review_result)
 
-    print("✅ 审查完成，结果已保存到 review_result.txt")
-    print("---- 审查结果预览 ----")
-    print(review_result)
+    log("✅ 审查完成，结果已保存到 review_result.txt")
+    log("---- 审查结果预览 ----")
+    log(review_result)
 
 
 if __name__ == "__main__":

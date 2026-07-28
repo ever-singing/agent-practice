@@ -42,6 +42,7 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           REVIEW_PERSONA: "catgirl" # 可选值: normal / catgirl
+          VERBOSE: "true" # 想安静点就改成 "false"
         run: python .github/workflows/code_review.py
 
       - name: 记录提交信息
